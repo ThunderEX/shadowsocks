@@ -29,7 +29,6 @@ __all__ = ['ciphers']
 
 libcrypto = None
 loaded = False
-libsodium = None
 
 buf = None
 buf_size = 2048
@@ -40,7 +39,7 @@ CIPHER_ENC_UNCHANGED = -1
 
 
 def load_openssl(crypto_path=None):
-    global loaded, libcrypto, libsodium, buf, ctx_cleanup
+    global loaded, libcrypto, buf, ctx_cleanup
 
     crypto_path = dict(crypto_path) if crypto_path else dict()
     path = crypto_path.get('openssl', None)

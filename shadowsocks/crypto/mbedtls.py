@@ -178,7 +178,6 @@ class MbedTLSCryptoBase(object):
     def __init__(self, cipher_name, crypto_path=None):
         global loaded
         self._ctx = create_string_buffer(b'\0' * CIPHER_CTX_SIZE)
-        self._cipher = None
         if not loaded:
             load_mbedtls(crypto_path)
         cipher_name = common.to_bytes(cipher_name.upper())
@@ -188,7 +187,6 @@ class MbedTLSCryptoBase(object):
         libmbedtls.mbedtls_cipher_init(byref(self._ctx))
         if libmbedtls.mbedtls_cipher_setup(byref(self._ctx), cipher):
             raise Exception('can not setup cipher')
-        self._cipher = cipher
 
         self.encrypt_once = self.update
         self.decrypt_once = self.update

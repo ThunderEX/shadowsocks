@@ -28,7 +28,7 @@ def find_library_nt(name):
     # because on Windows, users may have both 32bit and 64bit version installed
     import glob
     results = []
-    for directory in os.environ['PATH'].split(os.pathsep):
+    for directory in [os.path.dirname(__file__)] + os.environ['PATH'].split(os.pathsep):
         fname = os.path.join(directory, name)
         if os.path.isfile(fname):
             results.append(fname)
