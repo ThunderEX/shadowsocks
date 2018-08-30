@@ -23,7 +23,7 @@ import hashlib
 import logging
 
 from shadowsocks import common
-from shadowsocks.crypto import rc4_md5, openssl, mbedtls, sodium, table
+from shadowsocks.crypto import rc4_md5, openssl, mbedtls, sodium, cng, table
 
 
 CIPHER_ENC_ENCRYPTION = 1
@@ -38,6 +38,7 @@ method_supported.update(rc4_md5.ciphers)
 method_supported.update(openssl.ciphers)
 method_supported.update(mbedtls.ciphers)
 method_supported.update(sodium.ciphers)
+method_supported.update(cng.ciphers)
 method_supported.update(table.ciphers)
 
 

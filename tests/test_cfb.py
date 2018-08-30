@@ -1,13 +1,13 @@
 import re
 import binascii
 
-from shadowsocks.crypto import openssl, mbedtls, bcrypt
+from shadowsocks.crypto import openssl, mbedtls, cng
 
 plain_text = b'This is a test for cfb mode.'
 
 
 def test_cfb():
-    for lib in (openssl, mbedtls, bcrypt):
+    for lib in (openssl, mbedtls, cng):
         lib_name = lib.__name__.split('.')[-1]
         load_funcs = [getattr(lib, func) for func in dir(lib) if func.startswith('load_') and lib_name in func]
         if len(load_funcs) != 1:
