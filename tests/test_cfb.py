@@ -4,6 +4,7 @@ import binascii
 from shadowsocks.crypto import openssl, sodium, mbedtls, cng
 
 plain_text = b'This is a test for cfb mode.'
+additional_plain = b'This is additional test for cfb mode.'
 
 
 def test_cfb():
@@ -29,4 +30,9 @@ def test_cfb():
                 print('can\'t load %s' % method)
                 raise
             cipher_text = encryptor.encrypt(plain_text)
-            print(','.join([lib_name, method, binascii.hexlify(cipher_text[:4]).decode()]))
+            cipher_additional = encryptor.encrypt(additional_plain)
+            print(','.join([
+                lib_name, method,
+                binascii.hexlify(cipher_text[:4]).decode(),
+                binascii.hexlify(cipher_additional[:4]).decode(),
+            ]))
