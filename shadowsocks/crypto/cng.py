@@ -3,7 +3,7 @@ from __future__ import absolute_import, division, print_function, \
 
 from ctypes import (
     c_long, byref, create_string_buffer, c_void_p, c_byte,
-    c_ulong, c_wchar_p, c_ubyte, POINTER, sizeof, cast
+    c_ulong, c_wchar_p, c_ubyte, POINTER, sizeof, cast, Structure, c_ulonglong
 )
 try:
     from ctypes.wintypes import (
@@ -19,8 +19,10 @@ except ValueError:
     LPCWSTR = c_wchar_p
     HANDLE = c_void_p
 
+from shadowsocks.crypto.aead import AeadCryptoBase
 from shadowsocks.crypto import util
 
+ULONGLONG = c_ulonglong
 PUCHAR = POINTER(c_ubyte)
 PBYTE = POINTER(BYTE)
 
@@ -31,6 +33,28 @@ PBYTE = POINTER(BYTE)
 # BCRYPT_HANDLE = HANDLE
 # BCRYPT_ALG_HANDLE = HANDLE
 # BCRYPT_KEY_HANDLE = HANDLE
+
+# BCrypt structs
+BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION = 1
+
+
+class BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO(Structure):
+    _fields_ = [
+        ('cbSize', ULONG),
+        ('dwInfoVersion', ULONG),
+        ('pbNonce', PUCHAR),
+        ('cbNonce', ULONG),
+        ('pbAuthData', PUCHAR),
+        ('cbAuthData', ULONG),
+        ('pbTag', PUCHAR),
+        ('cbTag', ULONG),
+        ('pbMacContext', PUCHAR),
+        ('cbMacContext', ULONG),
+        ('cbAAD', ULONG),
+        ('cbData', ULONGLONG),
+        ('dwFlags', ULONG),
+    ]
+
 
 # BCrypt String Properties
 BCRYPT_OBJECT_LENGTH = 'ObjectLength'
@@ -69,11 +93,13 @@ loaded = False
 
 buf = None
 buf_size = 2048
+tag_buf = None
+tag_buf_size = 16
 
 
 def load_cng(crypto_path=None):
     from ctypes import windll
-    global loaded, bcrypt, buf
+    global loaded, bcrypt, buf, tag_buf
 
     bcrypt = windll.bcrypt
 
@@ -83,6 +109,7 @@ def load_cng(crypto_path=None):
             getattr(bcrypt, func_name).restype = restype
 
     buf = create_string_buffer(buf_size)
+    tag_buf = create_string_buffer(tag_buf_size)
     loaded = True
 
 
@@ -90,7 +117,7 @@ class CNGCryptBase(object):
     """
     bcrypt crypto base class
     """
-    def __init__(self, cipher_name, crypto_path=None):
+    def __init__(self, cipher_name, key, iv, op, crypto_path=None):
         if not loaded:
             load_cng(crypto_path)
 
@@ -125,24 +152,7 @@ class CNGCryptBase(object):
                 self.clean()
                 raise Exception('fail to set BCRYPT_MESSAGE_BLOCK_LENGTH for %s' % cipher_name)
 
-    def __del__(self):
-        self.clean()
-
-    def clean(self):
-        if hasattr(self, '_key_handle'):
-            bcrypt.BCryptDestroyKey(self._key_handle)
-        bcrypt.BCryptCloseAlgorithmProvider(self._alg_handle, 0)
-
-
-class CNGStreamCrypto(CNGCryptBase):
-    """
-    Crypto for stream modes: cfb, ofb, ctr
-    """
-    def __init__(self, cipher_name, key, iv, op, crypto_path=None):
-        cipher_name = cipher_name.lstrip('cng:')
-        CNGCryptBase.__init__(self, cipher_name, crypto_path)
-
-        # get size of jey object
+        # get size of key object
         cb_result = ULONG()
         key_obj_size = DWORD(0)
         res = bcrypt.BCryptGetProperty(self._alg_handle, BCRYPT_OBJECT_LENGTH, byref(key_obj_size), sizeof(key_obj_size), byref(cb_result), 0)
@@ -166,6 +176,24 @@ class CNGStreamCrypto(CNGCryptBase):
             raise Exception('fail to set key')
 
         self._iv_obj = create_string_buffer(iv)
+
+    def __del__(self):
+        self.clean()
+
+    def clean(self):
+        if hasattr(self, '_key_handle'):
+            bcrypt.BCryptDestroyKey(self._key_handle)
+        bcrypt.BCryptCloseAlgorithmProvider(self._alg_handle, 0)
+
+
+class CNGStreamCrypto(CNGCryptBase):
+    """
+    Crypto for stream modes: cfb, ofb, ctr
+    """
+    def __init__(self, cipher_name, key, iv, op, crypto_path=None):
+        if cipher_name[:len('cng:')] == 'cng:':
+            cipher_name = cipher_name[len('cng:'):]
+        CNGCryptBase.__init__(self, cipher_name, key, iv, op, crypto_path)
         self.encrypt_once = self.encrypt
         self.decrypt_once = self.decrypt
 
@@ -176,7 +204,7 @@ class CNGStreamCrypto(CNGCryptBase):
         if buf_size < l:
             buf_size = l * 2
             buf = create_string_buffer(buf_size)
-        res = bcrypt.BCryptEncrypt(self._key_handle, data, len(data), None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
+        res = bcrypt.BCryptEncrypt(self._key_handle, data, l, None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
         if res:
             self.clean()
             raise Exception('fail in BCryptEncrypt')
@@ -189,7 +217,80 @@ class CNGStreamCrypto(CNGCryptBase):
         if buf_size < l:
             buf_size = l * 2
             buf = create_string_buffer(buf_size)
-        res = bcrypt.BCryptDecrypt(self._key_handle, data, len(data), None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
+        res = bcrypt.BCryptDecrypt(self._key_handle, data, l, None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
+        if res:
+            self.clean()
+            raise Exception('fail in BCryptDecrypt')
+        return buf.raw[:cb_result.value]
+
+
+class CNGAeadCrypto(CNGCryptBase, AeadCryptoBase):
+    """
+    Implement CNG Aead mode: gcm
+    """
+    def __init__(self, cipher_name, key, iv, op, crypto_path=None):
+        global tag_buf_size, tag_buf
+
+        if cipher_name[:len('cng:')] == 'cng:':
+            cipher_name = cipher_name[len('cng:'):]
+        AeadCryptoBase.__init__(self, cipher_name, key, iv, op, crypto_path)
+        CNGCryptBase.__init__(self, cipher_name, self._skey, iv, op, crypto_path)
+
+        # reserve buffer for tag
+        if tag_buf_size < self._tlen:
+            tag_buf_size = self._tlen * 2
+            tag_buf = create_string_buffer(tag_buf_size)
+
+        # in place of macro BCRYPT_INIT_AUTH_MODE_INFO
+        self._auth_cipher_mode_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO(
+            sizeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO),
+            BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+        )
+
+        # further setup _auth_cipher_mode_info
+        self._auth_cipher_mode_info.pbNonce = cast(byref(self._nonce), PUCHAR)
+        self._auth_cipher_mode_info.cbNonce = self._nlen
+        self._auth_cipher_mode_info.cbTag = self._tlen
+
+        self.encrypt_once = self.aead_encrypt
+        self.decrypt_once = self.aead_decrypt
+
+    def aead_encrypt(self, data):
+        """
+        Encrypt data with authenticate tag
+
+        :param data: plain text
+        :return: cipher text with tag
+        """
+        global buf_size, buf
+        cb_result = ULONG()
+        plen = len(data)
+        if buf_size < plen:
+            buf_size = plen * 2
+            buf = create_string_buffer(buf_size)
+        self._auth_cipher_mode_info.pbTag = cast(byref(tag_buf), PUCHAR)
+        res = bcrypt.BCryptEncrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), 0)
+        if res:
+            self.clean()
+            raise Exception('fail in BCryptEncrypt')
+        return buf.raw[:cb_result.value] + tag_buf[:self._tlen]
+
+    def aead_decrypt(self, data):
+        """
+        Decrypt data and authenticate tag
+
+        :param data: cipher text with tag
+        :return: plain text
+        """
+        global buf_size, buf
+        cb_result = ULONG()
+        plen = len(data) - self._tlen
+        if buf_size < plen:
+            buf_size = plen * 2
+            buf = create_string_buffer(buf_size)
+        tag = create_string_buffer(data[-self._tlen:])
+        self._auth_cipher_mode_info.pbTag = cast(byref(tag), PUCHAR)
+        res = bcrypt.BCryptDecrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), 0)
         if res:
             self.clean()
             raise Exception('fail in BCryptDecrypt')
@@ -206,26 +307,17 @@ ciphers = {
     'cng:aes-128-cfb128': (16, 16, CNGStreamCrypto),
     'cng:aes-192-cfb128': (24, 16, CNGStreamCrypto),
     'cng:aes-256-cfb128': (32, 16, CNGStreamCrypto),
+    'cng:aes-128-gcm': (16, 16, CNGAeadCrypto),
+    'cng:aes-192-gcm': (24, 24, CNGAeadCrypto),
+    'cng:aes-256-gcm': (32, 32, CNGAeadCrypto),
 }
 
 
 def run_method(method):
 
     print(method, ': [stream]', 32)
-    key_size, iv_size, kls = ciphers[method]
+    key_size, iv_size, kls = ciphers.get(method, ciphers.get('cng:' + method))
     cipher = kls(method, b'k' * key_size, b'i' * iv_size, 1)
     decipher = kls(method, b'k' * key_size, b'i' * iv_size, 0)
 
     util.run_cipher(cipher, decipher)
-
-
-def test_aes_128_cfb():
-    run_method('cng:aes-128-cfb')
-
-
-def test_aes_256_cfb():
-    run_method('cng:aes-256-cfb')
-
-
-def test_aes_128_cfb8():
-    run_method('cng:aes-128-cfb8')

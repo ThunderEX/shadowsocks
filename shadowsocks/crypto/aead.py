@@ -142,8 +142,6 @@ class AeadCryptoBase(object):
     """
 
     def __init__(self, cipher_name, key, iv, op, crypto_path=None):
-        self._op = int(op)
-        self._salt = iv
         self._nlen = CIPHER_NONCE_LEN[cipher_name]
         self._nonce = create_string_buffer(self._nlen)
         self._tlen = CIPHER_TAG_LEN[cipher_name]

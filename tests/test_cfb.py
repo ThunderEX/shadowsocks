@@ -1,13 +1,13 @@
 import re
 import binascii
 
-from shadowsocks.crypto import openssl, mbedtls, cng
+from shadowsocks.crypto import openssl, sodium, mbedtls, cng
 
 plain_text = b'This is a test for cfb mode.'
 
 
 def test_cfb():
-    for lib in (openssl, mbedtls, cng):
+    for lib in (openssl, sodium, mbedtls, cng):
         lib_name = lib.__name__.split('.')[-1]
         load_funcs = [getattr(lib, func) for func in dir(lib) if func.startswith('load_') and lib_name in func]
         if len(load_funcs) != 1:
@@ -28,5 +28,5 @@ def test_cfb():
             except Exception:
                 print('can\'t load %s' % method)
                 raise
-            cipher_text = encryptor.encrypt_once(plain_text)
-            print(','.join([lib_name, method, binascii.hexlify(cipher_text[:8]).decode()]))
+            cipher_text = encryptor.encrypt(plain_text)
+            print(','.join([lib_name, method, binascii.hexlify(cipher_text[:4]).decode()]))
