@@ -32,7 +32,7 @@ def test_cfb():
             cipher_text = encryptor.encrypt(plain_text)
             cipher_additional = encryptor.encrypt(additional_plain)
             print(','.join([
-                lib_name, method,
-                binascii.hexlify(cipher_text[:4]).decode(),
-                binascii.hexlify(cipher_additional[:4]).decode(),
+                lib_name.ljust(7), method.split(':')[-1].ljust(14),
+                binascii.hexlify(cipher_text).decode(),
+                binascii.hexlify(cipher_additional).decode(),
             ]))

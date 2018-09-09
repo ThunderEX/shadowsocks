@@ -113,6 +113,10 @@ def load_cng(crypto_path=None):
     loaded = True
 
 
+def xor(buf1, buf2):
+    return (int.from_bytes(buf1, 'big') ^ int.from_bytes(buf2, 'big')).to_bytes(max(len(buf1), len(buf2)), 'big')
+
+
 class CNGCryptBase(object):
     """
     bcrypt crypto base class
@@ -160,13 +164,6 @@ class CNGCryptBase(object):
             self.clean()
             raise Exception('fail to get key object size')
 
-        # get size of iv object
-        # iv_obj_size = DWORD(0)
-        # res = bcrypt.BCryptGetProperty(self._alg_handle, BCRYPT_BLOCK_LENGTH, byref(iv_obj_size), sizeof(iv_obj_size), byref(cb_result), 0)
-        # if res:
-        #     self.clean()
-        #     raise Exception('fail to get iv object size')
-
         # create key handle from algorithm handle
         self._key_obj = create_string_buffer(b'\0' * key_obj_size.value)
         self._key_handle = HANDLE()
@@ -174,8 +171,6 @@ class CNGCryptBase(object):
         if res:
             self.clean()
             raise Exception('fail to set key')
-
-        self._iv_obj = create_string_buffer(iv)
 
     def __del__(self):
         self.clean()
@@ -197,31 +192,79 @@ class CNGStreamCrypto(CNGCryptBase):
         self.encrypt_once = self.encrypt
         self.decrypt_once = self.decrypt
 
+        # get size of iv object
+        # cb_result = ULONG()
+        # iv_obj_size = DWORD(0)
+        # res = bcrypt.BCryptGetProperty(self._alg_handle, BCRYPT_BLOCK_LENGTH, byref(iv_obj_size), sizeof(iv_obj_size), byref(cb_result), 0)
+        # if res:
+        #     self.clean()
+        #     raise Exception('fail to get iv object size')
+        # block_size = iv_obj_size.value
+
+        self._iv_obj = create_string_buffer(iv, len(iv))
+
+        # byte counter, not block counter
+        self._counter = 0
+
     def encrypt(self, data):
         global buf_size, buf
-        cb_result = ULONG()
         l = len(data)
-        if buf_size < l:
-            buf_size = l * 2
-            buf = create_string_buffer(buf_size)
-        res = bcrypt.BCryptEncrypt(self._key_handle, data, l, None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
-        if res:
-            self.clean()
-            raise Exception('fail in BCryptEncrypt')
-        return buf.raw[:cb_result.value]
+        block_size = len(self._iv_obj)
+        if self._counter:
+            remain_len = self._counter + l - block_size
+            if remain_len > 0:
+                result = b'\0' * self._counter + data[:block_size - self._counter]
+            else:
+                result = b'\0' * self._counter + data + b'\0' * -remain_len
+            self._iv_obj.raw = xor(self._iv_obj.raw, result)
+            result = self._iv_obj.raw[self._counter:self._counter + l]
+        else:
+            remain_len = l
+            result = b''
+        if remain_len > 0:
+            pad_len = - remain_len % block_size
+            remain_data = data[-remain_len:] + b'\0' * pad_len
+            cb_result = ULONG()
+            if buf_size < remain_len + pad_len:
+                buf_size = (remain_len + pad_len) * 2
+                buf = create_string_buffer(buf_size)
+            res = bcrypt.BCryptEncrypt(self._key_handle, remain_data, remain_len + pad_len, None, byref(self._iv_obj), block_size, byref(buf), buf_size, byref(cb_result), 0)
+            if res:
+                self.clean()
+                raise Exception('fail in BCryptEncrypt')
+            result += buf.raw[:remain_len]
+        self._counter = (self._counter + l) % block_size
+        return result
 
     def decrypt(self, data):
         global buf_size, buf
-        cb_result = ULONG()
         l = len(data)
-        if buf_size < l:
-            buf_size = l * 2
-            buf = create_string_buffer(buf_size)
-        res = bcrypt.BCryptDecrypt(self._key_handle, data, l, None, byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), BCRYPT_BLOCK_PADDING)
-        if res:
-            self.clean()
-            raise Exception('fail in BCryptDecrypt')
-        return buf.raw[:cb_result.value]
+        block_size = len(self._iv_obj)
+        if self._counter % block_size:
+            last_plain = buf.raw[self._counter // block_size * block_size:self._counter // block_size * block_size + block_size]
+            remain_len = self._counter + l - block_size
+            if remain_len > 0:
+                self._iv_obj.raw = self._iv_obj.raw[:self._counter] + data[:block_size - self._counter]
+            else:
+                self._iv_obj.raw = self._iv_obj.raw[:self._counter] + data + b'\0' * -remain_len
+            result = xor(self._iv_obj.raw, last_plain)[self._counter:]
+        else:
+            remain_len = l
+            result = b''
+        if remain_len > 0:
+            pad_len = - remain_len % block_size
+            remain_data = data[-remain_len:] + b'\0' * pad_len
+            cb_result = ULONG()
+            if buf_size < remain_len + pad_len:
+                buf_size = (remain_len + pad_len) * 2
+                buf = create_string_buffer(buf_size)
+            res = bcrypt.BCryptDecrypt(self._key_handle, remain_data, remain_len + pad_len, None, byref(self._iv_obj), block_size, byref(buf), buf_size, byref(cb_result), 0)
+            if res:
+                self.clean()
+                raise Exception('fail in BCryptDecrypt')
+            result += buf.raw[:remain_len]
+        self._counter = remain_len
+        return result
 
 
 class CNGAeadCrypto(CNGCryptBase, AeadCryptoBase):
@@ -269,7 +312,7 @@ class CNGAeadCrypto(CNGCryptBase, AeadCryptoBase):
             buf_size = plen * 2
             buf = create_string_buffer(buf_size)
         self._auth_cipher_mode_info.pbTag = cast(byref(tag_buf), PUCHAR)
-        res = bcrypt.BCryptEncrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), 0)
+        res = bcrypt.BCryptEncrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), None, 0, byref(buf), buf_size, byref(cb_result), 0)
         if res:
             self.clean()
             raise Exception('fail in BCryptEncrypt')
@@ -290,7 +333,7 @@ class CNGAeadCrypto(CNGCryptBase, AeadCryptoBase):
             buf = create_string_buffer(buf_size)
         tag = create_string_buffer(data[-self._tlen:])
         self._auth_cipher_mode_info.pbTag = cast(byref(tag), PUCHAR)
-        res = bcrypt.BCryptDecrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), byref(self._iv_obj), sizeof(self._iv_obj), byref(buf), sizeof(buf), byref(cb_result), 0)
+        res = bcrypt.BCryptDecrypt(self._key_handle, data, plen, byref(self._auth_cipher_mode_info), None, 0, byref(buf), buf_size, byref(cb_result), 0)
         if res:
             self.clean()
             raise Exception('fail in BCryptDecrypt')
