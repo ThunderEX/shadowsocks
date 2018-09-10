@@ -242,12 +242,12 @@ class CNGStreamCrypto(CNGCryptBase):
         block_size = len(self._iv_obj)
         if self._counter % block_size:
             last_plain = buf.raw[self._counter // block_size * block_size:self._counter // block_size * block_size + block_size]
-            remain_len = self._counter + l - block_size
+            remain_len = (self._counter % block_size) + l - block_size
             if remain_len > 0:
-                self._iv_obj.raw = self._iv_obj.raw[:self._counter] + data[:block_size - self._counter]
+                self._iv_obj.raw = self._iv_obj.raw[:self._counter % block_size] + data[:block_size - (self._counter % block_size)]
             else:
-                self._iv_obj.raw = self._iv_obj.raw[:self._counter] + data + b'\0' * -remain_len
-            result = xor(self._iv_obj.raw, last_plain)[self._counter:]
+                self._iv_obj.raw = self._iv_obj.raw[:self._counter % block_size] + data + b'\0' * -remain_len
+            result = xor(self._iv_obj.raw, last_plain)[self._counter % block_size:(self._counter % block_size) + l]
         else:
             remain_len = l
             result = b''
@@ -263,7 +263,7 @@ class CNGStreamCrypto(CNGCryptBase):
                 self.clean()
                 raise Exception('fail in BCryptDecrypt')
             result += buf.raw[:remain_len]
-        self._counter = remain_len
+        self._counter = remain_len if remain_len > 0 else self._counter + l
         return result
 
 
